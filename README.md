@@ -1,0 +1,12 @@
+# FastAPI Container - Starter Boilerplate
+
+FastAPI and Dockerfile starter code for optimized deployments on [Railway](https://fastapicontainer.com).
+
+Includes:
+
+- Minimal FastAPI app
+- FastAPI-built Dockerfile for continuous deployments
+- Endpoint for deployment health checks during Railway deploys
+
+Code: https://github.com/jmitchel3/fastapi-container
+Template: https://fastapicontainer.com
