@@ -10,3 +10,4 @@ Includes:
 
 Code: https://github.com/jmitchel3/fastapi-container
 Template: https://fastapicontainer.com
+Reference blog post on [Coding for Entrepreneurs](https://www.codingforentrepreneurs.com/blog/deploy-fastapi-to-railway-with-this-dockerfile)
