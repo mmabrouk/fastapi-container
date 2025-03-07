@@ -1,20 +1,140 @@
-from typing import Union
+import os
+from typing import List, Dict
+from dotenv import load_dotenv
+from qdrant_client import QdrantClient
+import litellm
+from litellm import embedding, completion
+import agenta as ag
+from pydantic import BaseModel, Field
+from typing import Annotated
+from agenta.sdk.assets import supported_llm_models
+from agenta.sdk.types import PromptTemplate
+system_prompt = """
+    You are a helpful assistant that answers questions based on the documentation.
+    """
+user_prompt = """
+    Here is the query: {query}
 
-from fastapi import FastAPI
+    Here is the context: {context}
+    """
+ag.init(host="http://localhost")
 
-app = FastAPI()
+litellm.callbacks = [ag.callbacks.litellm_handler()]
+
+# Initialize Qdrant client
+qdrant_client = QdrantClient(
+    url=os.getenv('QDRANT_URL'),
+    api_key=os.getenv('QDRANT_API_KEY')
+)
+
+class Config(BaseModel):
+    prompt: PromptTemplate = Field(
+        default=PromptTemplate(
+            system_prompt="You are an expert in geography",
+            user_prompt="What is the capital of {{query}}?",
+        )
+    )
+    system_prompt: str = Field(default=system_prompt)
+    user_prompt: str = Field(default=user_prompt)
+    embedding_model: Annotated[str, ag.MultipleChoice(["openai", "cohere"])] = Field(
+        default="openai"
+    )
+    llm_model: Annotated[str, ag.MultipleChoice(choices=supported_llm_models)] = Field(
+        default="gpt-3.5-turbo"
+    )
+
+    top_k: int = Field(default=10)
+
+def get_embeddings(text: str, model: str) -> Dict[str, List[float]]:
+    """Get embeddings using both OpenAI and Cohere models via LiteLLM."""
+    if model == "openai":
+        return embedding(
+            model="text-embedding-ada-002",
+            input=[text]
+        )['data'][0]['embedding']
+    elif model == "cohere":
+        return embedding(
+            model="cohere/embed-english-v3.0",
+            input=[text],
+            input_type="search_query"  # Use search_query for queries
+        )['data'][0]['embedding']
+    
+    raise ValueError(f"Unknown model: {model}")
 
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
+@ag.instrument()
+def search_docs(
+    query: str,
+    collection_name: str = os.getenv('COLLECTION_NAME', 'docs_collection')
+) -> List[Dict]:
+    """
+    Search the documentation using both OpenAI and Cohere embeddings.
+    
+    Args:
+        query: The search query
+        limit: Maximum number of results to return
+        score_threshold: Minimum similarity score (0-1) for results
+        collection_name: Name of the Qdrant collection to search
+    
+    Returns:
+        List of dictionaries containing matched documents and their metadata
+    """
+    # Get embeddings for the query
+    config = ag.ConfigManager.get_from_route(Config)
+    
+    # Search using both embeddings
+    results = qdrant_client.query_points(
+        collection_name=collection_name,
+        query=get_embeddings(query, config.embedding_model),
+        using=config.embedding_model,
+        limit=config.top_k
+    )
+    # Format results
+    formatted_results = []
+    for result in results.points:
+        formatted_result = {
+            'content': result.payload['content'],
+            'metadata': {
+                'title': result.payload['title'],
+                'url': result.payload['url'],
+                'score': result.score
+            }
+        }
+        formatted_results.append(formatted_result)
+    
+    return formatted_results
+
+@ag.instrument()
+def llm(query: str, results: List[Dict]):
+    
+    
+    config = ag.ConfigManager.get_from_route(Config)
+    context = []
+    for i, result in enumerate(results, 1):
+        item = f"Result {i} (Score: {result['metadata']['score']:.3f})\n"
+        item += f"Title: {result['metadata']['title']}\n"
+        item += f"URL: {result['metadata']['url']}\n"
+        item += f"Content: {result['content']}\n"
+        item += "-" * 80 + "\n"
+        context.append(item)
+    
+    ag.tracing.store_internals({"context": context})
+    response = completion(
+        model=config.llm_model,
+        messages=[
+            {"role": "system", "content": config.system_prompt},
+            {"role": "user", "content": config.user_prompt.format(query=query, context="".join(context))},
+        ]
+    )
+    return response.choices[0].message.content
+
+@ag.route("/", config_schema=Config)
+@ag.instrument()
+def generate(query:str):
+    results = search_docs(query)
+    return llm(query, results)
 
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None):
-    return {"item_id": item_id, "q": q}
-
-
-@app.get("/healthz/")
-def health_check_endpoint():
-    return {"status": "ok"}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("agenta:app", host="0.0.0.0", port=802, reload=True)
