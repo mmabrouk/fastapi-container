@@ -1,3 +1,9 @@
 fastapi>=0.115.8
 uvicorn
 gunicorn
+qdrant-client
+python-dotenv
+litellm
+python-frontmatter
+tiktoken
+agenta
